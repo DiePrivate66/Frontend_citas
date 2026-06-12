@@ -226,6 +226,27 @@ code {
   font-size: 0.9rem;
 }
 
+.top-bar {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.ghost-button {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(20, 28, 45, 0.14);
+  border-radius: 999px;
+  color: #243041;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.65rem 1rem;
+}
+
+.ghost-button:hover {
+  border-color: rgba(20, 28, 45, 0.28);
+}
+
 .booking-page {
   min-height: 100svh;
   display: grid;

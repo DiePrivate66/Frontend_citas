@@ -3,10 +3,15 @@ import type { FormEvent } from 'react'
 import { apiFetch } from '../lib/api'
 
 type LoginResponse = {
-  accessToken: string
+  access_token: string
+  user: {
+    name: string
+    email: string
+    role: string
+  }
 }
 
-function LoginPage() {
+function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -28,7 +33,8 @@ function LoginPage() {
         body: JSON.stringify({ email, password }),
       })
 
-      localStorage.setItem('accessToken', data.accessToken)
+      localStorage.setItem('accessToken', data.access_token)
+      onLogin(data.access_token)
     } catch {
       setError('No se pudo iniciar sesion. Revisa tus datos o intenta mas tarde.')
     } finally {

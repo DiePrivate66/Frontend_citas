@@ -1,17 +1,35 @@
-import { useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
+import { ApiError, authApiFetch } from '../lib/api'
 
 type ServiceOption = {
   id: number
+  businessId: number
   name: string
   durationMinutes: number
   price: string
+  isActive: boolean
 }
 
 type StaffOption = {
   id: number
+  businessId: number
   name: string
   roleTitle: string
+  isActive: boolean
+}
+
+type ClientResponse = {
+  id: number
+  businessId: number
+  name: string
+  email?: string
+  phone?: string
+}
+
+type AppointmentResponse = {
+  id: number
+  startsAt: string
 }
 
 type BookingForm = {
@@ -35,67 +53,6 @@ type BookingSummary = {
 
 const businessId = 1
 
-const mockServices: ServiceOption[] = [
-  {
-    id: 1,
-    name: 'Medicina general',
-    durationMinutes: 30,
-    price: '$15.00',
-  },
-  {
-    id: 2,
-    name: 'Psicologia clinica',
-    durationMinutes: 45,
-    price: '$20.00',
-  },
-  {
-    id: 3,
-    name: 'Odontologia general',
-    durationMinutes: 45,
-    price: '$25.00',
-  },
-  {
-    id: 4,
-    name: 'Psiquiatria',
-    durationMinutes: 60,
-    price: '$40.00',
-  },
-  {
-    id: 5,
-    name: 'Fisioterapia',
-    durationMinutes: 50,
-    price: '$30.00',
-  },
-]
-
-const mockStaff: StaffOption[] = [
-  {
-    id: 1,
-    name: 'Dra. Camila Torres',
-    roleTitle: 'Medicina general',
-  },
-  {
-    id: 2,
-    name: 'Dr. Andres Molina',
-    roleTitle: 'Psiquiatria',
-  },
-  {
-    id: 3,
-    name: 'Psic. Valeria Rios',
-    roleTitle: 'Psicologia clinica',
-  },
-  {
-    id: 4,
-    name: 'Od. Mateo Cardenas',
-    roleTitle: 'Odontologia general',
-  },
-  {
-    id: 5,
-    name: 'Ft. Daniel Vera',
-    roleTitle: 'Fisioterapia',
-  },
-]
-
 const initialForm: BookingForm = {
   name: '',
   cedula: '',
@@ -108,24 +65,87 @@ const initialForm: BookingForm = {
   notes: '',
 }
 
-function AppointmentBookingPage() {
+function AppointmentBookingPage({
+  token,
+  onLogout,
+}: {
+  token: string
+  onLogout: () => void
+}) {
   const [form, setForm] = useState<BookingForm>(initialForm)
+  const [services, setServices] = useState<ServiceOption[]>([])
+  const [staff, setStaff] = useState<StaffOption[]>([])
   const [errors, setErrors] = useState<Partial<Record<keyof BookingForm, string>>>(
     {},
   )
+  const [loadError, setLoadError] = useState('')
+  const [isLoadingOptions, setIsLoadingOptions] = useState(true)
   const [submitError, setSubmitError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [summary, setSummary] = useState<BookingSummary | null>(null)
 
   const selectedService = useMemo(
-    () => mockServices.find((service) => service.id === Number(form.serviceId)),
-    [form.serviceId],
+    () => services.find((service) => service.id === Number(form.serviceId)),
+    [form.serviceId, services],
   )
 
   const selectedStaff = useMemo(
-    () => mockStaff.find((staff) => staff.id === Number(form.staffId)),
-    [form.staffId],
+    () => staff.find((staffMember) => staffMember.id === Number(form.staffId)),
+    [form.staffId, staff],
   )
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadOptions() {
+      try {
+        setIsLoadingOptions(true)
+        setLoadError('')
+
+        const [serviceOptions, staffOptions] = await Promise.all([
+          authApiFetch<ServiceOption[]>('/services', token),
+          authApiFetch<StaffOption[]>('/staff', token),
+        ])
+
+        if (!isMounted) {
+          return
+        }
+
+        setServices(
+          serviceOptions.filter(
+            (service) => service.businessId === businessId && service.isActive,
+          ),
+        )
+        setStaff(
+          staffOptions.filter(
+            (staffMember) =>
+              staffMember.businessId === businessId && staffMember.isActive,
+          ),
+        )
+      } catch (error) {
+        if (!isMounted) {
+          return
+        }
+
+        if (error instanceof ApiError && error.status === 401) {
+          onLogout()
+          return
+        }
+
+        setLoadError('No se pudieron cargar servicios y profesionales.')
+      } finally {
+        if (isMounted) {
+          setIsLoadingOptions(false)
+        }
+      }
+    }
+
+    void loadOptions()
+
+    return () => {
+      isMounted = false
+    }
+  }, [onLogout, token])
 
   function updateField(field: keyof BookingForm, value: string) {
     setForm((currentForm) => ({ ...currentForm, [field]: value }))
@@ -183,31 +203,38 @@ function AppointmentBookingPage() {
       setIsSubmitting(true)
 
       const startsAt = new Date(`${form.date}T${form.time}:00`).toISOString()
-      const futurePayload = {
+      const client = await createOrFindClient(token, {
         businessId,
-        serviceId: Number(form.serviceId),
-        staffId: form.staffId ? Number(form.staffId) : undefined,
-        startsAt,
-        client: {
-          name: form.name.trim(),
-          cedula: form.cedula.trim(),
-          phone: form.phone.trim(),
-          email: form.email.trim(),
+        name: form.name.trim(),
+        email: form.email.trim(),
+        phone: form.phone.trim(),
+        notes: buildClientNotes(form.cedula, form.notes),
+      })
+      const appointment = await authApiFetch<AppointmentResponse>(
+        '/appointments',
+        token,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            businessId,
+            serviceId: Number(form.serviceId),
+            clientId: client.id,
+            staffId: form.staffId ? Number(form.staffId) : undefined,
+            startsAt,
+            notes: form.notes.trim() || undefined,
+          }),
         },
-        notes: form.notes.trim() || undefined,
-      }
-
-      await simulateBookingRequest(futurePayload)
+      )
 
       setSummary({
         clientName: form.name.trim(),
         serviceName: selectedService?.name ?? 'Servicio seleccionado',
         staffName: selectedStaff?.name ?? 'Profesional por asignar',
-        startsAt,
+        startsAt: appointment.startsAt,
       })
       setForm(initialForm)
-    } catch {
-      setSubmitError('No se pudo registrar la cita. Intenta otra vez.')
+    } catch (error) {
+      setSubmitError(getSubmitError(error))
     } finally {
       setIsSubmitting(false)
     }
@@ -216,14 +243,20 @@ function AppointmentBookingPage() {
   return (
     <main className="booking-page">
       <section className="booking-hero">
-        <p className="eyebrow">Agenda de salud</p>
-        <h1>Reserva tu cita de salud sin crear cuenta</h1>
+        <div className="top-bar">
+          <p className="eyebrow">Agenda de salud</p>
+          <button type="button" className="ghost-button" onClick={onLogout}>
+            Cerrar sesion
+          </button>
+        </div>
+        <h1>Reserva tu cita de salud</h1>
         <p className="lead">
-          El paciente completa sus datos personales y elige atencion medica,
-          psicologica, odontologica, psiquiatrica o de fisioterapia. La reserva
-          se conectara al backend cuando exista el endpoint publico.
+          Registra los datos del paciente, elige el servicio y confirma la cita
+          directamente contra el backend en produccion.
         </p>
       </section>
+
+      {loadError ? <p className="form-error">{loadError}</p> : null}
 
       <form className="booking-form" onSubmit={handleSubmit} noValidate>
         <section className="booking-section" aria-labelledby="patient-title">
@@ -304,15 +337,20 @@ function AppointmentBookingPage() {
                 id="serviceId"
                 name="serviceId"
                 value={form.serviceId}
+                disabled={isLoadingOptions}
                 onChange={(event) =>
                   updateField('serviceId', event.target.value)
                 }
               >
-                <option value="">Selecciona un servicio</option>
-                {mockServices.map((service) => (
+                <option value="">
+                  {isLoadingOptions
+                    ? 'Cargando servicios...'
+                    : 'Selecciona un servicio'}
+                </option>
+                {services.map((service) => (
                   <option key={service.id} value={service.id}>
                     {service.name} - {service.durationMinutes} min -{' '}
-                    {service.price}
+                    {formatPrice(service.price)}
                   </option>
                 ))}
               </select>
@@ -323,12 +361,13 @@ function AppointmentBookingPage() {
                 id="staffId"
                 name="staffId"
                 value={form.staffId}
+                disabled={isLoadingOptions}
                 onChange={(event) => updateField('staffId', event.target.value)}
               >
                 <option value="">Cualquier profesional disponible</option>
-                {mockStaff.map((staff) => (
-                  <option key={staff.id} value={staff.id}>
-                    {staff.name} - {staff.roleTitle}
+                {staff.map((staffMember) => (
+                  <option key={staffMember.id} value={staffMember.id}>
+                    {staffMember.name} - {staffMember.roleTitle}
                   </option>
                 ))}
               </select>
@@ -372,7 +411,7 @@ function AppointmentBookingPage() {
 
           {summary ? (
             <div className="success-message">
-              <strong>Cita registrada en modo demo.</strong>
+              <strong>Cita registrada correctamente.</strong>
               <span>
                 {summary.clientName} - {summary.serviceName} -{' '}
                 {summary.staffName} - {formatAppointmentDate(summary.startsAt)}
@@ -380,13 +419,73 @@ function AppointmentBookingPage() {
             </div>
           ) : null}
 
-          <button type="submit" disabled={isSubmitting}>
+          <button type="submit" disabled={isSubmitting || isLoadingOptions}>
             {isSubmitting ? 'Registrando cita...' : 'Agendar cita'}
           </button>
         </section>
       </form>
     </main>
   )
+}
+
+async function createOrFindClient(
+  token: string,
+  payload: {
+    businessId: number
+    name: string
+    email: string
+    phone: string
+    notes?: string
+  },
+) {
+  try {
+    return await authApiFetch<ClientResponse>('/clients', token, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 409) {
+      throw error
+    }
+
+    const clients = await authApiFetch<ClientResponse[]>('/clients', token)
+    const existingClient = clients.find(
+      (client) =>
+        client.businessId === payload.businessId &&
+        (client.email === payload.email || client.phone === payload.phone),
+    )
+
+    if (!existingClient) {
+      throw error
+    }
+
+    return existingClient
+  }
+}
+
+function buildClientNotes(cedula: string, notes: string) {
+  return [`Cedula: ${cedula.trim()}`, notes.trim()].filter(Boolean).join('\n')
+}
+
+function getSubmitError(error: unknown) {
+  if (error instanceof ApiError) {
+    return error.message
+  }
+
+  return 'No se pudo registrar la cita. Intenta otra vez.'
+}
+
+function formatPrice(value: string) {
+  const numericValue = Number(value)
+
+  if (Number.isNaN(numericValue)) {
+    return value
+  }
+
+  return new Intl.NumberFormat('es-EC', {
+    style: 'currency',
+    currency: 'USD',
+  }).format(numericValue)
 }
 
 function FormField({
@@ -400,7 +499,7 @@ function FormField({
   label: string
   error?: string
   className?: string
-  children: React.ReactNode
+  children: ReactNode
 }) {
   return (
     <div className={`form-field ${className ?? ''}`.trim()}>
@@ -416,11 +515,6 @@ function formatAppointmentDate(value: string) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value))
-}
-
-async function simulateBookingRequest(payload: unknown) {
-  console.info('Future POST /public/appointments payload', payload)
-  await new Promise((resolve) => window.setTimeout(resolve, 700))
 }
 
 export default AppointmentBookingPage
